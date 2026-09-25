@@ -104,7 +104,16 @@ const slice = createSlice({
             deleteBlueprint: idleRequest(),
         },
     },
-    reducers: {},
+    reducers: {
+        // Tiempo real: puntos que otro cliente dibujó (mensaje STOMP de /topic/blueprints.{author}.{name}).
+        // Solo actualiza el estado local; quien dibujó ya los guardó en la API REST.
+        remotePointsReceived(s, a) {
+            const { author, name, points = [] } = a.payload
+            const inList = s.byAuthor[author]?.find((bp) => bp.name === name)
+            if (inList) inList.points.push(...points)
+            if (isSameBlueprint(s.current, author, name)) s.current.points.push(...points)
+        },
+    },
     extraReducers: (builder) => {
         builder
         // fetchAuthors
@@ -197,6 +206,8 @@ const slice = createSlice({
             })
     },
 })
+
+export const { remotePointsReceived } = slice.actions
 
 // ---------- Selectores ----------
 

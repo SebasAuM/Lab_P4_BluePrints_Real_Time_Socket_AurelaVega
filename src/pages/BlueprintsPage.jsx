@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import {
   addPoint,
@@ -6,11 +6,26 @@ import {
   fetchAuthors,
   fetchByAuthor,
   fetchBlueprint,
+  remotePointsReceived,
   selectRequests,
   selectTopBlueprints,
 } from '../features/blueprints/blueprintsSlice.js'
 import BlueprintCanvas from '../components/BlueprintCanvas.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
+import useBlueprintStomp from '../hooks/useBlueprintStomp.js'
+
+// Tecnologías de tiempo real disponibles en el selector RT.
+const RT_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'stomp', label: 'STOMP' },
+]
+
+const RT_STATUS_LABEL = {
+  off: 'Desactivado',
+  connecting: 'Conectando...',
+  connected: 'Conectado',
+  error: 'Sin conexión',
+}
 
 export default function BlueprintsPage() {
   const dispatch = useDispatch()
@@ -27,6 +42,7 @@ export default function BlueprintsPage() {
   const [pointX, setPointX] = useState('')
   const [pointY, setPointY] = useState('')
   const [lastOpened, setLastOpened] = useState(null) // para poder reintentar "Open"
+  const [rtTech, setRtTech] = useState('stomp') // selector RT: 'none' | 'stomp'
   const items = byAuthor[selectedAuthor] || []
 
   const validPoint =
@@ -38,6 +54,15 @@ export default function BlueprintsPage() {
   useEffect(() => {
     dispatch(fetchAuthors())
   }, [dispatch])
+
+  // Tiempo real: los puntos que dibujan otros clientes en el plano abierto llegan por STOMP.
+  const handleRemoteUpdate = useCallback((upd) => dispatch(remotePointsReceived(upd)), [dispatch])
+  const rt = useBlueprintStomp({
+    enabled: rtTech === 'stomp',
+    author: current?.author,
+    name: current?.name,
+    onUpdate: handleRemoteUpdate,
+  })
 
   const totalPoints = useMemo(
     () => items.reduce((acc, bp) => acc + (bp.points?.length || 0), 0),
@@ -67,16 +92,20 @@ export default function BlueprintsPage() {
   }
 
   // Optimistic: el punto se dibuja al instante; si el servidor falla, se quita.
+  // Solo cuando la API REST confirma el punto se publica a los demás clientes (/app/draw),
+  // así nunca se replica un punto que luego se revierte.
+  const drawPoint = (point) => {
+    if (!current) return
+    dispatch(addPoint({ author: current.author, name: current.name, point }))
+      .unwrap()
+      .then(() => rt.sendPoint(point))
+      .catch(() => {}) // el error ya queda en requests.addPoint y se muestra en el banner
+  }
+
   const submitPoint = (e) => {
     e.preventDefault()
     if (!current || !validPoint) return
-    dispatch(
-      addPoint({
-        author: current.author,
-        name: current.name,
-        point: { x: Number(pointX), y: Number(pointY) },
-      }),
-    )
+    drawPoint({ x: Number(pointX), y: Number(pointY) })
     setPointX('')
     setPointY('')
   }
@@ -196,6 +225,24 @@ export default function BlueprintsPage() {
 
       <section className="card">
         <h3 style={{ marginTop: 0 }}>Current blueprint: {current?.name || '—'}</h3>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <label htmlFor="rt-tech">Tiempo real</label>
+          <select
+            id="rt-tech"
+            className="input"
+            style={{ width: 'auto' }}
+            value={rtTech}
+            onChange={(e) => setRtTech(e.target.value)}
+          >
+            {RT_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <span data-testid="rt-status">{RT_STATUS_LABEL[rt.status]}</span>
+        </div>
+        {rt.error && <ErrorBanner message={rt.error} />}
         {openRequest.status === 'loading' && <p>Cargando plano...</p>}
         {openRequest.status === 'failed' && (
           <ErrorBanner
@@ -203,7 +250,10 @@ export default function BlueprintsPage() {
             onRetry={openRequest.retryable && lastOpened ? retryOpen : undefined}
           />
         )}
-        <BlueprintCanvas points={current?.points || []} />
+        <BlueprintCanvas
+          points={current?.points || []}
+          onAddPoint={current ? drawPoint : undefined}
+        />
 
         {current && (
           <form onSubmit={submitPoint} style={{ display: 'flex', gap: 12, marginTop: 12 }}>

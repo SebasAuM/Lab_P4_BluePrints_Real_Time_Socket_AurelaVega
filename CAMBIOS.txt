@@ -1,0 +1,136 @@
+CAMBIOS REALIZADOS - Lab P4 BluePrints en Tiempo Real (STOMP + CORS)
+=====================================================================
+
+Tecnología de tiempo real elegida: STOMP sobre WebSocket, en el mismo backend Spring Boot
+del Lab P2 (Lab_P2_BluePrints_Java21_API_Security_JWT_AURELA_VEGA, puerto 8080).
+
+Flujo:
+  1. El front guarda cada punto por REST: PUT /api/blueprints/{author}/{name}/points (con JWT).
+  2. Cuando la API responde OK, el front publica el punto por STOMP en /app/draw.
+  3. Spring lo retransmite a /topic/blueprints.{author}.{name}.
+  4. Las demás pestañas suscritas a ese tópico agregan el punto y repintan el canvas.
+
+
+A) BACKEND - Spring Boot (Lab_P2_BluePrints_Java21_API_Security_JWT_AURELA_VEGA)
+---------------------------------------------------------------------------------
+1. pom.xml
+   - Se agregó la dependencia spring-boot-starter-websocket (WebSocket + STOMP).
+
+2. src/main/resources/application.yml
+   - Nueva propiedad blueprints.cors.allowed-origins con
+     "http://localhost:5173,http://127.0.0.1:5173" (orígenes del front con Vite).
+     La usan tanto el CORS de la API REST como el handshake del WebSocket.
+
+3. security/SecurityConfig.java
+   - Se habilitó CORS en la cadena de seguridad: .cors(Customizer.withDefaults()).
+   - Nuevo bean corsConfigurationSource: orígenes de la propiedad anterior; métodos
+     GET, POST, PUT, DELETE, OPTIONS; headers Authorization y Content-Type;
+     credenciales permitidas; maxAge 3600 s.
+   - Las peticiones preflight (OPTIONS /**) se permiten sin token.
+   - /ws-blueprints/** se permite sin token en HTTP (el navegador no puede enviar
+     Authorization en el handshake WebSocket); el JWT se valida en el frame CONNECT.
+
+4. realtime/WebSocketConfig.java (NUEVO)
+   - @EnableWebSocketMessageBroker.
+   - Endpoint STOMP: /ws-blueprints, restringido a los orígenes permitidos (CORS).
+   - Broker simple en /topic y /queue; prefijo de aplicación /app; prefijo de usuario /user.
+   - Registra el interceptor de autenticación en el canal de entrada.
+
+5. realtime/StompAuthChannelInterceptor.java (NUEVO)
+   - CONNECT: exige "Authorization: Bearer <jwt>" y lo valida con el mismo JwtDecoder
+     de la API REST. Sin token o con token inválido la conexión se rechaza.
+   - SEND (/app/draw): exige el scope blueprints.write (igual que el PUT de puntos).
+   - Logs de CONNECT y SUBSCRIBE (observabilidad).
+
+6. realtime/BlueprintsStompController.java (NUEVO)
+   - @MessageMapping("/draw"): recibe { author, name, point: { x, y }, clientId }.
+   - Valida el payload y que el plano exista.
+   - Difunde { author, name, points: [ { x, y } ], clientId } a
+     /topic/blueprints.{author}.{name} con SimpMessagingTemplate.convertAndSend.
+   - No guarda el punto (ya lo guardó el PUT REST), para no duplicarlo.
+   - Los errores (payload inválido, plano inexistente) se devuelven solo al emisor
+     en /user/queue/errors (@MessageExceptionHandler + @SendToUser).
+
+7. API REST - nuevo endpoint DELETE (lo exige el README de P4 y el front ya lo llamaba)
+   - BlueprintPersistence.java: nuevo método deleteBlueprint(author, name).
+   - InMemoryBlueprintPersistence.java: implementación (404 si no existe).
+   - BlueprintsServices.java: nuevo método deleteBlueprint(author, name).
+   - BlueprintsAPIController.java: DELETE /api/blueprints/{author}/{bpname},
+     requiere scope blueprints.write; responde 204, o 404 si no existe.
+
+
+B) FRONT - React + Vite (Lab_P4_BluePrints_Real_Time_Socket_AurelaVega)
+------------------------------------------------------------------------
+1. package.json / package-lock.json
+   - Se agregó @stomp/stompjs (cliente STOMP).
+   - Se quitaron socket.io, express, cors y el script "dev:server" (apuntaba a un
+     server.js de Node que ya no se usa: el tiempo real ahora está en Spring).
+
+2. .env.example y .env.local
+   - VITE_API_BASE_URL=/api, VITE_AUTH_BASE_URL=/auth, VITE_USE_MOCK=false.
+   - Nueva variable VITE_STOMP_BASE=http://localhost:8080 (base del WebSocket STOMP).
+   - Se quitaron VITE_API_BASE / VITE_IO_BASE, que el código no usaba.
+
+3. vite.config.js
+   - Se corrigió la clave "server" duplicada (la segunda borraba el port 5173);
+     ahora port y proxy (/api y /auth -> http://localhost:8080) están en un solo bloque.
+
+4. src/services/stompClient.js (NUEVO)
+   - Crea el cliente STOMP contra ws://localhost:8080/ws-blueprints.
+   - Envía el JWT en los headers del CONNECT.
+   - Reconexión automática cada 3 s y heartbeats de 10 s.
+   - Helpers: topicFor(author, name), destino /app/draw, cola /user/queue/errors.
+
+5. src/hooks/useBlueprintStomp.js (NUEVO)
+   - Conecta o desconecta según el selector RT y la sesión (token de Redux).
+   - Se suscribe al tópico del plano abierto y cancela la suscripción anterior al
+     cambiar de plano (se vuelve a suscribir tras una reconexión).
+   - sendPoint(point) publica en /app/draw.
+   - Cada pestaña tiene un clientId para ignorar el eco de sus propios puntos.
+   - Expone status ('off' | 'connecting' | 'connected' | 'error') y los mensajes de error.
+
+6. src/features/blueprints/blueprintsSlice.js
+   - Nuevo reducer remotePointsReceived: agrega los puntos recibidos por STOMP al plano
+     abierto (current) y a la lista del autor (byAuthor), sin llamar a la API.
+
+7. src/pages/BlueprintsPage.jsx
+   - Selector de tecnología de tiempo real (None / STOMP) con indicador de estado de conexión.
+   - Canvas con dibujo por clic en el plano abierto.
+   - Cada punto (clic o formulario x/y) se guarda por REST (optimistic update) y, cuando
+     la API responde OK, se publica por STOMP; si la API falla no se replica.
+   - Banner con errores de la conexión de tiempo real.
+
+8. src/services/BlueprintsApiClient.js
+   - Se actualizó el comentario de remove(): el DELETE ya existe en el backend (204).
+
+9. Tests
+   - tests/blueprintsSlice.test.jsx: 2 pruebas nuevas para remotePointsReceived.
+   - tests/BlueprintsPage.test.jsx: mock del hook useBlueprintStomp y de la acción
+     remotePointsReceived (los tests no necesitan un broker).
+
+
+C) VERIFICACIÓN
+---------------
+- Front: npm test (33 pruebas OK), npm run lint (sin errores) y npm run build (OK).
+- Backend: mvn compile OK. Con el backend corriendo se probó:
+  * Preflight CORS desde http://localhost:5173 -> 200 con Access-Control-Allow-Origin.
+  * Preflight CORS desde un origen no permitido -> 403.
+  * Handshake WebSocket desde un origen no permitido -> 403; desde localhost:5173 -> 101.
+  * DELETE /api/blueprints/jane/garden -> 204; repetido -> 404.
+  * Dos clientes STOMP: el punto publicado en /app/draw por uno llega al otro por
+    /topic/blueprints.john.house.
+  * Dibujar en un plano inexistente devuelve el error por /user/queue/errors.
+  * CONNECT sin token -> rechazado.
+
+
+D) CÓMO EJECUTAR
+----------------
+1. Backend:  cd Lab_P2_BluePrints_Java21_API_Security_JWT_AURELA_VEGA
+             mvn spring-boot:run            (http://localhost:8080)
+2. Front:    cd Lab_P4_BluePrints_Real_Time_Socket_AurelaVega
+             npm install
+             npm run dev                    (http://localhost:5173)
+3. Iniciar sesión con assistant / assistant123 (tiene scope blueprints.write; student
+   solo puede leer y no puede dibujar).
+4. Abrir dos pestañas, consultar el mismo autor, abrir el mismo plano con el selector
+   en STOMP y hacer clic en el canvas: los puntos aparecen en ambas pestañas.

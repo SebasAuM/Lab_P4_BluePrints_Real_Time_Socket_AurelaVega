@@ -37,9 +37,8 @@ const blueprintsApiClient = {
         return point
     },
 
-    // Delete: DELETE /api/blueprints/{author}/{name}
-    // OJO: el backend actual NO expone este endpoint, así que responderá con error (ej. 405).
-    // Es intencional: así se puede ver cómo el optimistic update se revierte.
+    // Delete: DELETE /api/blueprints/{author}/{name} (requiere blueprints.write).
+    // El backend responde 204 sin cuerpo.
     async remove(author, name) {
         await api.delete(`/blueprints/${enc(author)}/${enc(name)}`)
     },

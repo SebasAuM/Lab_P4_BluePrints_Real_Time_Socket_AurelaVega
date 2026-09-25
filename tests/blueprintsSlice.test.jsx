@@ -6,6 +6,7 @@ import reducer, {
   createBlueprint,
   addPoint,
   deleteBlueprint,
+  remotePointsReceived,
   selectRequests,
   selectTopBlueprints,
 } from '../src/features/blueprints/blueprintsSlice.js'
@@ -228,6 +229,29 @@ describe('blueprints slice (reducers puros)', () => {
       const top = selectTopBlueprints({ blueprints })
       expect(top).toHaveLength(5)
       expect(top.map((bp) => bp.name)).toEqual(['g', 'f', 'd', 'b', 'a'])
+    })
+  })
+
+  describe('remotePointsReceived (tiempo real)', () => {
+    const bp = () => ({ author: 'john', name: 'house', points: [{ x: 1, y: 1 }] })
+
+    it('agrega los puntos remotos al plano abierto y a la lista del autor', () => {
+      const prev = { ...initial(), current: bp(), byAuthor: { john: [bp()] } }
+      const state = reducer(
+        prev,
+        remotePointsReceived({ author: 'john', name: 'house', points: [{ x: 5, y: 6 }] }),
+      )
+      expect(state.current.points).toEqual([{ x: 1, y: 1 }, { x: 5, y: 6 }])
+      expect(state.byAuthor.john[0].points).toEqual([{ x: 1, y: 1 }, { x: 5, y: 6 }])
+    })
+
+    it('ignora puntos de otro plano', () => {
+      const prev = { ...initial(), current: bp() }
+      const state = reducer(
+        prev,
+        remotePointsReceived({ author: 'john', name: 'otro', points: [{ x: 5, y: 6 }] }),
+      )
+      expect(state.current.points).toEqual([{ x: 1, y: 1 }])
     })
   })
 })

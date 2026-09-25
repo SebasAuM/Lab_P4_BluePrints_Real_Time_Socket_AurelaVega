@@ -22,8 +22,14 @@ vi.mock('../src/features/blueprints/blueprintsSlice.js', () => ({
   fetchBlueprint: (payload) => ({ type: 'blueprints/fetchBlueprint', payload }),
   addPoint: (payload) => ({ type: 'blueprints/addPoint', payload }),
   deleteBlueprint: (payload) => ({ type: 'blueprints/deleteBlueprint', payload }),
+  remotePointsReceived: (payload) => ({ type: 'blueprints/remotePointsReceived', payload }),
   selectRequests: (state) => state.blueprints.requests,
   selectTopBlueprints: () => EMPTY_TOP_BLUEPRINTS,
+}))
+
+// Sin broker STOMP en los tests: el hook de tiempo real se reemplaza por un stub.
+vi.mock('../src/hooks/useBlueprintStomp.js', () => ({
+  default: () => ({ status: 'off', error: null, sendPoint: () => {} }),
 }))
 
 function makeStore(preloaded) {
